@@ -1,0 +1,64 @@
+name: Build VoiceInk
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voiceink-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build macOS app
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Download source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check build tools
+        run: |
+          xcodebuild -version
+          swift --version
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          make check
+
+      - name: Build personal-use app
+        run: |
+          mkdir -p "$HOME/Downloads"
+          set -o pipefail
+          make local LOCAL_CODESIGN_IDENTITY=- 2>&1 | tee "$RUNNER_TEMP/voiceink-build.log"
+
+      - name: Verify and package app
+        run: |
+          APP_PATH="$HOME/Downloads/VoiceInk.app"
+          test -x "$APP_PATH/Contents/MacOS/VoiceInk"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" dist/VoiceInk.zip
+          shasum -a 256 dist/VoiceInk.zip > dist/VoiceInk.zip.sha256
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceInk-macOS
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceInk-build-log
+          path: ${{ runner.temp }}/voiceink-build.log
+          if-no-files-found: ignore
+          retention-days: 3
